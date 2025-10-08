@@ -35,6 +35,8 @@ def convert(
         raise typer.Exit(1) from exc
     console.print(f"[green]Success[/green]: {result.summary}")
     console.print(f"Run assets: {result.assets_dir}")
+    if result.zip_path:
+        console.print(f"Output archive: {result.zip_path}")
 
 
 @app.command()

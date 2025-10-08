@@ -4,9 +4,10 @@ from fastapi import FastAPI
 
 from core.markdown_converter.config import AppConfig, load_config
 from core.markdown_converter.core import ConversionService
+from core.markdown_converter.jobs import JobManager
 from core.settings import Settings, get_settings
 
-from .routers import convert, health
+from .routers import health, jobs
 
 
 def create_app() -> FastAPI:
@@ -17,10 +18,17 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Local Markdown Converter", version="0.1.0")
     app.state.config = config
-    app.state.service = ConversionService(config)
+    service = ConversionService(config)
+    app.state.service = service
+    app.state.job_manager = JobManager(config, service)
 
     app.include_router(health.router)
-    app.include_router(convert.router)
+    app.include_router(jobs.router)
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:  # pragma: no cover - FastAPI lifecycle
+        manager: JobManager = app.state.job_manager
+        manager.shutdown()
 
     return app
 

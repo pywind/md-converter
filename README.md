@@ -12,7 +12,7 @@ local machine.
 - Asset extraction to per-run folders with relative Markdown references.
 - Strict MIME + extension validation, size guards, and timeout enforcement.
 - JSONL run logs plus batch summaries written to `runs/summary.csv`.
-- Optional FastAPI service (`POST /convert`, `POST /batch`) gated by configuration.
+- Optional FastAPI job service that queues work asynchronously and exposes polling endpoints.
 - Utilities for batch processing, run cleanup, and deterministic run identifiers.
 
 ## Project Layout
@@ -24,7 +24,7 @@ local machine.
 ├── src/
 │   ├── api/
 │   │   ├── app.py         # FastAPI factory using dependency injection
-│   │   └── routers/       # Route modules (conversion + health)
+│   │   └── routers/       # Route modules (jobs + health)
 │   ├── core/
 │   │   ├── constraint/    # Fixed runtime constraints and defaults
 │   │   ├── markdown_converter/
@@ -32,6 +32,7 @@ local machine.
 │   │   │   ├── cli/       # Typer-powered CLI definitions
 │   │   │   ├── config.py  # Configuration loader and models
 │   │   │   ├── core.py    # Conversion service orchestration
+│   │   │   ├── jobs.py    # Asynchronous job management and persistence
 │   │   │   ├── detection.py
 │   │   │   ├── logging.py
 │   │   │   └── utils.py
@@ -106,6 +107,7 @@ Runtime behavior is controlled via `config.toml`. Key options include:
 - `runtime.convert_timeout_s`: Maximum conversion time per file.
 - `runtime.parallelism`: Default CLI parallelism.
 - `runtime.enable_local_api`: Toggle for FastAPI routes.
+- `runtime.jobs.*`: Worker pool sizing, dedupe behavior, and retention policies for the job queue.
 - `formats.allowed`: MIME allow list enforced during detection.
 
 See [CONFIG.md](CONFIG.md) for a full reference and defaults.
@@ -118,13 +120,66 @@ To enable the API, set `enable_local_api = true` under `[runtime]` in `config.to
 uvicorn api.app:create_app --factory --reload
 ```
 
-Endpoints:
+### Asynchronous job API
 
-- `POST /convert`: Accepts `multipart/form-data` upload with a single `file` field.
-- `POST /batch`: Accepts multiple `file` fields; returns run metadata and batch summary.
+The API is intentionally non-blocking: submissions return immediately with a job identifier while a
+background worker pool performs the conversion. All responses reference absolute local paths under
+`./runs/` so callers can integrate with downstream tooling without streaming file contents.
 
-Responses include the `run_id`, absolute paths to `output.md` and the `assets` directory, plus any
-warnings. Size and MIME policies mirror the CLI.
+**Submission**
+
+- `POST /api/v1/jobs`
+  - form-data: `file` (required), optional `options` JSON string
+    - `image_policy`: `"extract"|"ignore"`
+    - `size_limit_mb`: integer override (`<=` config cap)
+    - `timeout_s`: per-job timeout (`<=` config cap)
+    - `normalize_headings`: boolean
+    - `output_mode`: `"md"|"zip"|"both"`
+    - `dedupe`: boolean (enable artifact reuse when the same content+options are seen)
+  - response: `{ job_id, status: "queued", submitted_at, progress }`
+
+**Status & lifecycle**
+
+- `GET /api/v1/jobs/{job_id}` returns the canonical job record including
+  `{ status, progress, submitted_at, started_at?, finished_at?, warnings, error_code?,
+  error_message?, parent_job_id?, reused?, artifacts? }`.
+- `GET /api/v1/jobs` lists the most recent N job records from the append-only index.
+
+Jobs transition through the following state machine:
+
+```
+queued → running → succeeded
+                   ↘
+                    failed ↘
+                             canceled → expired (retention sweep)
+```
+
+Progress updates follow deterministic milestones: `0.1` read/validate, `0.2` detect MIME,
+`0.6` convert, `0.8` asset write, `1.0` finalize (zip + summary). Cancel requests flip queued jobs
+immediately and signal running workers, which respect the cancellation flag before finalization.
+
+**Result metadata**
+
+- `GET /api/v1/jobs/{job_id}/result`
+  - only available for `succeeded` or `expired` jobs.
+  - returns `{ artifacts: { output_md_path, assets_dir_path, run_dir_path, output_zip_path?,
+    size_bytes_md, size_bytes_assets_total }, reused }`.
+  - `?as=zip` adds `zip_path` pointing at `./runs/{job_id}/output.zip` (created when
+    `output_mode` is `zip` or `both`).
+
+**Control operations**
+
+- `POST /api/v1/jobs/{job_id}/cancel` best-effort cancellation; returns the updated status.
+- `POST /api/v1/jobs/{job_id}/retry` resubmits failed/canceled/expired jobs with their cached input,
+  linking lineage via `parent_job_id`.
+
+**Durability & retention**
+
+- Per-job `status.json` is the source of truth; logs and summaries reside under each run directory.
+- `runs/_index/jobs.jsonl` and `runs/_index/latest.json` track history for quick listing.
+- A background retention thread marks terminal jobs older than `runtime.jobs.retention_days` as
+  `expired`, archives their status, and removes artifacts. Queries to `/jobs/{job_id}` continue to
+  return the archived metadata.
 
 ## Testing & Quality Gates
 

@@ -24,6 +24,14 @@ class BatchConfig:
 
 
 @dataclass(slots=True)
+class JobRuntimeConfig:
+    worker_pool_size: int = 0
+    retention_days: int = 7
+    dedupe_enabled: bool = False
+    keep_partials: bool = False
+
+
+@dataclass(slots=True)
 class RuntimeConfig:
     output_dir: Path = Path("runs")
     log_file: str = "log.jsonl"
@@ -34,6 +42,7 @@ class RuntimeConfig:
     parallelism: int = 1
     limits: LimitConfig = field(default_factory=LimitConfig)
     batch: BatchConfig = field(default_factory=BatchConfig)
+    jobs: JobRuntimeConfig = field(default_factory=JobRuntimeConfig)
 
 
 @dataclass(slots=True)
@@ -87,11 +96,23 @@ def _build_batch(data: Mapping[str, object] | None) -> BatchConfig:
     )
 
 
+def _build_jobs(data: Mapping[str, object] | None) -> JobRuntimeConfig:
+    if not data:
+        return JobRuntimeConfig()
+    return JobRuntimeConfig(
+        worker_pool_size=int(data.get("worker_pool_size", 0)),
+        retention_days=int(data.get("retention_days", 7)),
+        dedupe_enabled=bool(data.get("dedupe_enabled", False)),
+        keep_partials=bool(data.get("keep_partials", False)),
+    )
+
+
 def _build_runtime(data: Mapping[str, object] | None) -> RuntimeConfig:
     if not data:
         return RuntimeConfig()
     limits = _build_limits(data.get("limits") if isinstance(data, Mapping) else None)
     batch = _build_batch(data.get("batch") if isinstance(data, Mapping) else None)
+    jobs = _build_jobs(data.get("jobs") if isinstance(data, Mapping) else None)
     return RuntimeConfig(
         output_dir=Path(str(data.get("output_dir", "runs"))),
         log_file=str(data.get("log_file", "log.jsonl")),
@@ -102,6 +123,7 @@ def _build_runtime(data: Mapping[str, object] | None) -> RuntimeConfig:
         parallelism=int(data.get("parallelism", 1)),
         limits=limits,
         batch=batch,
+        jobs=jobs,
     )
 
 
@@ -151,6 +173,12 @@ def dump_config(config: AppConfig) -> str:
             "batch": {
                 "default_parallelism": config.runtime.batch.default_parallelism,
                 "single_run_default": config.runtime.batch.single_run_default,
+            },
+            "jobs": {
+                "worker_pool_size": config.runtime.jobs.worker_pool_size,
+                "retention_days": config.runtime.jobs.retention_days,
+                "dedupe_enabled": config.runtime.jobs.dedupe_enabled,
+                "keep_partials": config.runtime.jobs.keep_partials,
             },
         },
         "formats": list(config.allowed_mime_types),

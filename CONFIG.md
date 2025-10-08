@@ -22,6 +22,12 @@ max_sheets = 50
 default_parallelism = 1
 single_run_default = false
 
+[runtime.jobs]
+worker_pool_size = 0
+retention_days = 7
+dedupe_enabled = false
+keep_partials = false
+
 [formats]
 allowed = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -58,6 +64,17 @@ Sanity guards for adapter-specific processing. Currently informational; tune as 
 
 - **`default_parallelism`** — Worker count when `--parallel` is omitted.
 - **`single_run_default`** — Whether batch invocations combine all inputs into a single Markdown file.
+
+### `[runtime.jobs]`
+
+- **`worker_pool_size`** — Number of background threads dedicated to API jobs. `0` selects
+  `min(4, cpu_count)` automatically.
+- **`retention_days`** — Age threshold for moving terminal jobs to `expired` and cleaning their run
+  directories. Set to `0` to disable automatic expiry.
+- **`dedupe_enabled`** — Enable cache lookups so identical content with identical options can reuse
+  existing artifacts (hard-linked/copied to the new run directory).
+- **`keep_partials`** — Preserve partial outputs when cancellations occur. Defaults to `false` so
+  canceled runs only keep `status.json`.
 
 ### `[formats]`
 
