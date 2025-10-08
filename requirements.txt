@@ -1,5 +1,8 @@
-pip
-autopep8
-Flask==3.0.3
-gunicorn==22.0.0
-Werkzeug==3.0.6
+markitdown>=0.0.7
+fastapi>=0.111
+uvicorn>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7
+typer>=0.12
+rich>=13.7
+aiofiles>=23.2
