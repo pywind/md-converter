@@ -1,0 +1,48 @@
+[project]
+name = "local-markdown-converter"
+version = "0.1.0"
+description = "Offline-first document to Markdown conversion toolkit"
+authors = [{name = "Local Dev"}]
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+  "markitdown>=0.0.7",
+  "typer>=0.12",
+  "rich>=13.7",
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+  "python-multipart>=0.0.9",
+  "pydantic>=2.7",
+  "aiofiles>=23.2",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3",
+  "pytest-cov>=5.0",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+dev-dependencies = ["ruff>=0.4", "mypy>=1.10", "pre-commit>=3.7"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["E203", "E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
