@@ -1,7 +1,5 @@
-from fastapi import FastAPI
+from markdown_converter.cli import app
 
-app = FastAPI()
 
-@app.get("/")
-async def read_root():
-    return {"Hello": "World"}
+if __name__ == "__main__":
+    app()

@@ -1,3 +1,3 @@
 #!/bin/sh
-source .venv/bin/activate
-python -u -m flask --app main run --debug
+set -e
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
