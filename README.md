@@ -22,16 +22,21 @@ local machine.
 ├── docs/
 │   └── WBS.md             # Detailed work breakdown structure and acceptance criteria
 ├── src/
-│   ├── main.py            # CLI entrypoint
-│   └── markdown_converter/
-│       ├── adapters/      # Format-specific adapters
-│       ├── api.py         # FastAPI factory (optional)
-│       ├── cli/           # Typer-powered CLI definitions
-│       ├── config.py      # Configuration loader and models
-│       ├── core.py        # Conversion service orchestration
-│       ├── detection.py   # MIME + extension detection utilities
-│       ├── logging.py     # Run logging + summaries
-│       └── utils.py       # Filesystem helpers and run management
+│   ├── api/
+│   │   ├── app.py         # FastAPI factory using dependency injection
+│   │   └── routers/       # Route modules (conversion + health)
+│   ├── core/
+│   │   ├── constraint/    # Fixed runtime constraints and defaults
+│   │   ├── markdown_converter/
+│   │   │   ├── adapters/  # Format-specific adapters
+│   │   │   ├── cli/       # Typer-powered CLI definitions
+│   │   │   ├── config.py  # Configuration loader and models
+│   │   │   ├── core.py    # Conversion service orchestration
+│   │   │   ├── detection.py
+│   │   │   ├── logging.py
+│   │   │   └── utils.py
+│   │   └── settings.py    # Environment-derived runtime settings
+│   └── main.py            # CLI entrypoint
 └── tests/                 # Pytest suite (unit + smoke tests)
 ```
 
@@ -55,7 +60,7 @@ uv sync --group dev --group test
 
 ## CLI Usage
 
-The CLI is available via `python -m markdown_converter.cli` or the repository entrypoint
+The CLI is available via `python -m core.markdown_converter.cli` or the repository entrypoint
 `python src/main.py`. Examples assume you are in the project root.
 
 ### Single File Conversion
@@ -110,7 +115,7 @@ See [CONFIG.md](CONFIG.md) for a full reference and defaults.
 To enable the API, set `enable_local_api = true` under `[runtime]` in `config.toml` and launch:
 
 ```bash
-uvicorn markdown_converter.api:create_app --factory --reload
+uvicorn api.app:create_app --factory --reload
 ```
 
 Endpoints:

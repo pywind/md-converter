@@ -1,20 +1,23 @@
-from pathlib import Path
-
 import pytest
 
-from markdown_converter.detection import DetectionError, detect_document_type, DocumentType
+from core.markdown_converter.detection import (
+    DetectionError,
+    DocumentType,
+    detect_document_type,
+)
 
 
-def test_detect_txt(tmp_path: Path) -> None:
-    file_path = tmp_path / "note.txt"
-    file_path.write_text("hello", encoding="utf-8")
-    result = detect_document_type(file_path)
-    assert result.document_type == DocumentType.TXT
-    assert result.mime_type == "text/plain"
+def test_detect_document_type_html(tmp_path):
+    sample = tmp_path / "sample.html"
+    sample.write_text("<html><body>Hi</body></html>")
+    result = detect_document_type(sample)
+    assert result.document_type == DocumentType.HTML
+    assert result.mime_type == "text/html"
 
 
-def test_detect_pdf_mismatch(tmp_path: Path) -> None:
-    file_path = tmp_path / "fake.pdf"
-    file_path.write_text("not a pdf", encoding="utf-8")
-    with pytest.raises(DetectionError):
-        detect_document_type(file_path)
+def test_detect_document_type_unknown_extension(tmp_path):
+    sample = tmp_path / "sample.xyz"
+    sample.write_text("dummy")
+    with pytest.raises(DetectionError) as exc:
+        detect_document_type(sample)
+    assert "Unsupported file extension" in str(exc.value)

@@ -67,7 +67,7 @@ entry here or conversion fails with `UNSUPPORTED_MIME`.
 ### `[api]`
 
 - **`host`**, **`port`** — Bind settings used when launching `uvicorn` with the factory
-  `markdown_converter.api:create_app`.
+  `api.app:create_app`.
 
 ## Tips
 

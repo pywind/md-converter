@@ -1,9 +1,9 @@
 from fastapi import FastAPI, HTTPException
 
-from markdown_converter.api import create_app
+from api import create_app
 
 try:
-    app = create_app(require_enabled=True)
+    app = create_app()
 except RuntimeError:
     app = FastAPI(title="Local Markdown Converter", version="0.1.0")
 

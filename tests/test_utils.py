@@ -1,17 +1,20 @@
-from markdown_converter.utils import generate_run_id, normalize_newlines, slugify
+from core.markdown_converter.utils import (
+    generate_run_id,
+    normalize_newlines,
+    slugify,
+)
 
 
-def test_slugify_basic() -> None:
-    assert slugify("Hello World!.pdf") == "Hello-World.pdf"
-
-
-def test_normalize_newlines() -> None:
-    text = "line1\r\nline2 \n"
-    assert normalize_newlines(text) == "line1\nline2\n"
-
-
-def test_generate_run_id_unique() -> None:
-    first = generate_run_id("test")
-    second = generate_run_id("test")
+def test_generate_run_id_unique():
+    first = generate_run_id()
+    second = generate_run_id()
     assert first != second
-    assert first.startswith("test-")
+    assert first.startswith("run-")
+
+
+def test_slugify_preserves_safe_characters():
+    assert slugify("Hello World!") == "Hello-World"
+
+
+def test_normalize_newlines_appends_trailing_newline():
+    assert normalize_newlines("a\r\nb\rc") == "a\nb\nc\n"
