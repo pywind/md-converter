@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
-from typing import Callable, Literal, Sequence
+from typing import Callable, Sequence
 from zipfile import ZIP_DEFLATED, ZipFile
 
 ProgressCallback = Callable[[float], None]
@@ -15,6 +15,7 @@ from .adapters import AdapterResponse, get_adapter
 from .config import AppConfig
 from .detection import DetectionError, detect_document_type
 from .logging import BatchSummary, RunLogEntry, RunLogger, StageTimings, write_summary_csv
+from .models import BatchConversionResult, ConversionOptions, ConversionResult
 from .utils import (
     RunPaths,
     atomic_write,
@@ -30,32 +31,6 @@ class ConversionError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
-
-
-@dataclass(slots=True)
-class ConversionOptions:
-    size_limit_mb: int | None = None
-    timeout_s: int | None = None
-    image_policy: Literal["extract", "ignore"] = "extract"
-    normalize_headings: bool = True
-    output_mode: Literal["md", "zip", "both"] = "md"
-
-
-@dataclass(slots=True)
-class ConversionResult:
-    run_id: str
-    output_path: Path
-    assets_dir: Path
-    warnings: list[str]
-    summary: str
-    zip_path: Path | None = None
-    reused: bool = False
-
-
-@dataclass(slots=True)
-class BatchConversionResult:
-    runs: list[ConversionResult]
-    summary: BatchSummary
 
 
 @dataclass(slots=True)

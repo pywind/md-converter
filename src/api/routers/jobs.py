@@ -4,33 +4,21 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
+from api.dependencies import get_job_manager
+from api.utils import run_sync
 from core.markdown_converter.config import AppConfig
 from core.markdown_converter.jobs import JobManager, JobOptions, JobRecord, JobStatus
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
 
-def get_config(request: Request) -> AppConfig:
-    config = getattr(request.app.state, "config", None)
-    if config is None:
-        raise HTTPException(status_code=503, detail="CONFIG_UNAVAILABLE")
-    return config
-
-
-def get_manager(request: Request) -> JobManager:
-    manager = getattr(request.app.state, "job_manager", None)
-    if manager is None:
-        raise HTTPException(status_code=503, detail="MANAGER_UNAVAILABLE")
-    return manager
-
-
 @router.post("/jobs", summary="Submit a conversion job", status_code=202)
 async def submit_job(
     file: UploadFile = File(...),
     options: str | None = Form(None),
-    manager: JobManager = Depends(get_manager),
+    manager: JobManager = Depends(get_job_manager),
 ) -> dict[str, Any]:
     payload = await file.read()
     if not payload:
@@ -40,7 +28,12 @@ async def submit_job(
     except json.JSONDecodeError as exc:  # pragma: no cover - invalid payload path
         raise HTTPException(status_code=400, detail="INVALID_OPTIONS") from exc
     job_options = _build_options(options_payload)
-    record = manager.submit(file.filename or "upload", payload, job_options)
+    record = await run_sync(
+        manager.submit,
+        file.filename or "upload",
+        payload,
+        job_options,
+    )
     return {
         "job_id": record.job_id,
         "status": record.status.value,
@@ -50,20 +43,20 @@ async def submit_job(
 
 
 @router.get("/jobs/{job_id}", summary="Retrieve job status")
-def get_job(job_id: str, manager: JobManager = Depends(get_manager)) -> dict[str, Any]:
-    record = manager.get_status(job_id)
+async def get_job(job_id: str, manager: JobManager = Depends(get_job_manager)) -> dict[str, Any]:
+    record = await run_sync(manager.get_status, job_id)
     if record is None:
         raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
     return _serialize_record(record)
 
 
 @router.get("/jobs/{job_id}/result", summary="Retrieve job result metadata")
-def get_job_result(
+async def get_job_result(
     job_id: str,
     as_: str | None = Query(None, alias="as"),
-    manager: JobManager = Depends(get_manager),
+    manager: JobManager = Depends(get_job_manager),
 ) -> dict[str, Any]:
-    record = manager.get_status(job_id)
+    record = await run_sync(manager.get_status, job_id)
     if record is None:
         raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
     if record.status not in {JobStatus.SUCCEEDED, JobStatus.EXPIRED}:
@@ -86,18 +79,19 @@ def get_job_result(
 
 
 @router.post("/jobs/{job_id}/cancel", summary="Cancel a queued or running job")
-def cancel_job(job_id: str, manager: JobManager = Depends(get_manager)) -> dict[str, Any]:
-    if not manager.cancel(job_id):
+async def cancel_job(job_id: str, manager: JobManager = Depends(get_job_manager)) -> dict[str, Any]:
+    canceled = await run_sync(manager.cancel, job_id)
+    if not canceled:
         raise HTTPException(status_code=409, detail="NOT_CANCELABLE")
-    record = manager.get_status(job_id)
+    record = await run_sync(manager.get_status, job_id)
     if record is None:
         raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
     return _serialize_record(record)
 
 
 @router.post("/jobs/{job_id}/retry", summary="Retry a failed or expired job")
-def retry_job(job_id: str, manager: JobManager = Depends(get_manager)) -> dict[str, Any]:
-    record = manager.retry(job_id)
+async def retry_job(job_id: str, manager: JobManager = Depends(get_job_manager)) -> dict[str, Any]:
+    record = await run_sync(manager.retry, job_id)
     if record is None:
         raise HTTPException(status_code=409, detail="UNABLE_TO_RETRY")
     return {
@@ -109,11 +103,11 @@ def retry_job(job_id: str, manager: JobManager = Depends(get_manager)) -> dict[s
 
 
 @router.get("/jobs", summary="List recent jobs")
-def list_jobs(
+async def list_jobs(
     limit: int = Query(50, ge=1, le=500),
-    manager: JobManager = Depends(get_manager),
+    manager: JobManager = Depends(get_job_manager),
 ) -> dict[str, Any]:
-    latest = manager.list_jobs(limit)
+    latest = await run_sync(manager.list_jobs, limit)
     return {"jobs": latest}
 
 
@@ -156,5 +150,5 @@ def _serialize_record(record: JobRecord) -> dict[str, Any]:
     return payload
 
 
-__all__ = ["router", "get_manager", "get_config"]
+__all__ = ["router", "get_job_manager"]
 
