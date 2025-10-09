@@ -47,7 +47,7 @@ def test_job_manager_completes_and_tracks_artifacts(tmp_path):
 def test_job_manager_dedupe_reuses_artifacts(tmp_path):
     manager = build_manager(tmp_path)
     try:
-        first = manager.submit("report.txt", b"reuse me", JobOptions(output_mode="both"))
+        first = manager.submit("report.txt", b"reuse me", JobOptions(output_mode="both", dedupe=True))
         wait_for_status(manager, first.job_id, JobStatus.SUCCEEDED)
         deduped = manager.submit("report.txt", b"reuse me", JobOptions(output_mode="both", dedupe=True))
         assert deduped.status is JobStatus.SUCCEEDED
