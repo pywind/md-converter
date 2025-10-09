@@ -263,6 +263,7 @@ class JobHandle:
     cancel_event: threading.Event
     submitted_at: datetime
     input_hash: str
+    dedupe_key: str
 
 
 class JobManager:
@@ -307,15 +308,15 @@ class JobManager:
         self._store.write_status(record)
         self._store.append_index(record)
 
-        dedupe_key: str | None = None
+        dedupe_key = self._dedupe_key(digest, options)
         if options.dedupe and self._config.runtime.jobs.dedupe_enabled:
-            dedupe_key = sha256((digest + options.signature()).encode("utf-8")).hexdigest()
             existing = self._store.lookup_dedupe(dedupe_key)
             if existing:
                 reused = self._attempt_reuse(job_id, existing, options, digest, submitted, sanitized)
                 if reused:
                     reused_record = self._store.read_status(job_id)
                     if reused_record:
+                        self._store.record_dedupe(dedupe_key, job_id)
                         return reused_record
         handle = JobHandle(
             job_id=job_id,
@@ -326,15 +327,18 @@ class JobManager:
             cancel_event=threading.Event(),
             submitted_at=submitted,
             input_hash=digest,
+            dedupe_key=dedupe_key,
         )
         with self._lock:
             self._jobs[job_id] = handle
         future = self._executor.submit(self._run_job, handle)
         with self._lock:
             self._futures[job_id] = future
-        if dedupe_key:
-            self._store.record_dedupe(dedupe_key, job_id)
         return record
+
+    def _dedupe_key(self, digest: str, options: JobOptions) -> str:
+        payload = (digest + options.signature()).encode("utf-8")
+        return sha256(payload).hexdigest()
 
     def _attempt_reuse(
         self,
@@ -513,6 +517,7 @@ class JobManager:
                 "input_hash": handle.input_hash,
             },
         )
+        self._store.record_dedupe(handle.dedupe_key, handle.job_id)
         lock_path.unlink(missing_ok=True)
         self._append_terminal(handle.job_id)
         return result
