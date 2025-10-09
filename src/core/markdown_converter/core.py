@@ -114,6 +114,10 @@ class ConversionService:
         from .utils import atomic_write
 
         atomic_write(run_paths.output_file, markdown)
+        # propagate any markdown mutations (e.g., appended asset links) to the
+        # response object so callers aggregating the response body do not lose
+        # the references written to disk.
+        response.markdown = markdown
         write_elapsed = (time.perf_counter() - write_start) * 1000
 
         logger.append(
