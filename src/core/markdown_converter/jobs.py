@@ -308,15 +308,16 @@ class JobManager:
         self._store.append_index(record)
 
         dedupe_key: str | None = None
-        if options.dedupe and self._config.runtime.jobs.dedupe_enabled:
+        if self._config.runtime.jobs.dedupe_enabled:
             dedupe_key = sha256((digest + options.signature()).encode("utf-8")).hexdigest()
-            existing = self._store.lookup_dedupe(dedupe_key)
-            if existing:
-                reused = self._attempt_reuse(job_id, existing, options, digest, submitted, sanitized)
-                if reused:
-                    reused_record = self._store.read_status(job_id)
-                    if reused_record:
-                        return reused_record
+            if options.dedupe:
+                existing = self._store.lookup_dedupe(dedupe_key)
+                if existing:
+                    reused = self._attempt_reuse(job_id, existing, options, digest, submitted, sanitized)
+                    if reused:
+                        reused_record = self._store.read_status(job_id)
+                        if reused_record:
+                            return reused_record
         handle = JobHandle(
             job_id=job_id,
             filename=sanitized,
@@ -345,36 +346,97 @@ class JobManager:
         submitted: datetime,
         filename: str,
     ) -> bool:
-        existing = self._store.read_status(existing_job_id)
-        if not existing or existing.status is not JobStatus.SUCCEEDED or not existing.artifacts:
+        existing = self._load_reusable_record(existing_job_id)
+        if existing is None:
             return False
         run_paths = self._store.run_paths(job_id)
-        artifacts = existing.artifacts
-        if not artifacts.output_md_path:
+        copied_artifacts = self._copy_reuse_artifacts(existing.artifacts, run_paths, options)
+        if copied_artifacts is None:
             return False
+        options_dict = options.as_dict()
+        options_dict["source_filename"] = filename
+        finished = _utc_now()
+        reused_record = self._build_reused_record(
+            job_id=job_id,
+            existing_job_id=existing_job_id,
+            existing=existing,
+            artifacts=copied_artifacts,
+            options=options_dict,
+            digest=digest,
+            submitted=submitted,
+            finished=finished,
+        )
+        self._finalize_reuse(job_id, reused_record, existing_job_id)
+        return True
+
+    def _load_reusable_record(self, existing_job_id: str) -> JobRecord | None:
+        record = self._store.read_status(existing_job_id)
+        if not record or record.status is not JobStatus.SUCCEEDED or not record.artifacts:
+            return None
+        if not record.artifacts.output_md_path:
+            return None
+        if not Path(record.artifacts.output_md_path).exists():
+            return None
+        return record
+
+    def _copy_reuse_artifacts(
+        self, artifacts: JobArtifacts | None, run_paths: RunPaths, options: JobOptions
+    ) -> JobArtifacts | None:
+        if artifacts is None or not artifacts.output_md_path:
+            return None
         source_output = Path(artifacts.output_md_path)
         if not source_output.exists():
-            return False
+            return None
         atomic_copy(source_output, run_paths.output_file)
         assets_total = 0
         if artifacts.assets_dir_path:
-            source_assets = Path(artifacts.assets_dir_path)
-            if source_assets.exists():
-                for asset in source_assets.rglob("*"):
-                    if asset.is_file():
-                        destination = run_paths.assets_dir / asset.relative_to(source_assets)
-                        atomic_copy(asset, destination)
-                        assets_total += destination.stat().st_size
-        zip_path: Path | None = None
-        if options.output_mode in {"zip", "both"} and artifacts.output_zip_path:
-            source_zip = Path(artifacts.output_zip_path)
-            if source_zip.exists():
-                zip_path = run_paths.base_dir / "output.zip"
-                atomic_copy(source_zip, zip_path)
-        finished = _utc_now()
-        options_dict = options.as_dict()
-        options_dict["source_filename"] = filename
-        reused_record = JobRecord(
+            assets_total = self._copy_asset_tree(Path(artifacts.assets_dir_path), run_paths.assets_dir)
+        zip_path = self._reuse_zip(artifacts, run_paths, options)
+        return JobArtifacts(
+            output_md_path=str(run_paths.output_file),
+            assets_dir_path=str(run_paths.assets_dir),
+            run_dir_path=str(run_paths.base_dir),
+            output_zip_path=str(zip_path) if zip_path else None,
+            size_bytes_md=run_paths.output_file.stat().st_size if run_paths.output_file.exists() else 0,
+            size_bytes_assets_total=assets_total,
+        )
+
+    def _copy_asset_tree(self, source_dir: Path, destination_dir: Path) -> int:
+        total = 0
+        if not source_dir.exists():
+            return total
+        for asset in source_dir.rglob("*"):
+            if asset.is_file():
+                destination = destination_dir / asset.relative_to(source_dir)
+                atomic_copy(asset, destination)
+                total += destination.stat().st_size
+        return total
+
+    def _reuse_zip(
+        self, artifacts: JobArtifacts, run_paths: RunPaths, options: JobOptions
+    ) -> Path | None:
+        if options.output_mode not in {"zip", "both"} or not artifacts.output_zip_path:
+            return None
+        source_zip = Path(artifacts.output_zip_path)
+        if not source_zip.exists():
+            return None
+        destination = run_paths.base_dir / "output.zip"
+        atomic_copy(source_zip, destination)
+        return destination
+
+    def _build_reused_record(
+        self,
+        *,
+        job_id: str,
+        existing_job_id: str,
+        existing: JobRecord,
+        artifacts: JobArtifacts,
+        options: dict[str, object],
+        digest: str,
+        submitted: datetime,
+        finished: datetime,
+    ) -> JobRecord:
+        return JobRecord(
             job_id=job_id,
             status=JobStatus.SUCCEEDED,
             progress=1.0,
@@ -382,32 +444,26 @@ class JobManager:
             started_at=_iso(submitted),
             finished_at=_iso(finished),
             warnings=existing.warnings,
-            artifacts=JobArtifacts(
-                output_md_path=str(run_paths.output_file),
-                assets_dir_path=str(run_paths.assets_dir),
-                run_dir_path=str(run_paths.base_dir),
-                output_zip_path=str(zip_path) if zip_path else None,
-                size_bytes_md=run_paths.output_file.stat().st_size if run_paths.output_file.exists() else 0,
-                size_bytes_assets_total=assets_total,
-            ),
-            options=options_dict,
+            artifacts=artifacts,
+            options=options,
             parent_job_id=existing_job_id,
             reused=True,
             input_hash=digest,
         )
-        self._store.write_status(reused_record)
-        self._store.append_index(reused_record)
+
+    def _finalize_reuse(self, job_id: str, record: JobRecord, source_job_id: str) -> None:
+        self._store.write_status(record)
+        self._store.append_index(record)
         self._store.write_summary(
             job_id,
             {
                 "job_id": job_id,
                 "status": JobStatus.SUCCEEDED.value,
                 "reused": True,
-                "source_job_id": existing_job_id,
+                "source_job_id": source_job_id,
                 "duration_seconds": 0.0,
             },
         )
-        return True
 
     def _run_job(self, handle: JobHandle) -> ConversionResult | None:
         try:
@@ -416,19 +472,14 @@ class JobManager:
             self._finalize_job(handle.job_id)
 
     def _execute_job(self, handle: JobHandle) -> ConversionResult | None:
-        record = self._store.read_status(handle.job_id)
-        if record is None:
-            record = JobRecord(job_id=handle.job_id, status=JobStatus.QUEUED)
-        if handle.cancel_event.is_set():
-            self._update_status(handle.job_id, JobStatus.CANCELED, progress=0.0)
-            return None
-        started = _utc_now()
-        self._update_status(
-            handle.job_id,
-            JobStatus.RUNNING,
-            progress=0.0,
-            started_at=_iso(started),
+        record = self._store.read_status(handle.job_id) or JobRecord(
+            job_id=handle.job_id, status=JobStatus.QUEUED
         )
+        if self._should_cancel(handle):
+            return None
+
+        started = _utc_now()
+        self._start_job(handle.job_id, started)
         lock_path = self._store.lock_path(handle.job_id)
         lock_path.write_text(str(started.timestamp()), encoding="utf-8")
 
@@ -444,54 +495,93 @@ class JobManager:
                 cancellation=handle.cancel_event,
             )
         except ConversionError as exc:
-            finished = _utc_now()
-            status = JobStatus.CANCELED if exc.code == "CANCELED" else JobStatus.FAILED
-            self._update_status(
-                handle.job_id,
-                status,
-                progress=1.0 if status is JobStatus.CANCELED else max(record.progress, 0.0),
-                finished_at=_iso(finished),
-                warnings=[],
-                error_code=exc.code,
-                error_message=str(exc),
-            )
-            self._store.write_summary(
-                handle.job_id,
-                {
-                    "job_id": handle.job_id,
-                    "status": status.value,
-                    "error_code": exc.code,
-                    "duration_seconds": (finished - started).total_seconds(),
-                },
-            )
-            if status is JobStatus.CANCELED and not self._config.runtime.jobs.keep_partials:
-                self._cleanup_artifacts(handle.job_id)
-            lock_path.unlink(missing_ok=True)
-            self._append_terminal(handle.job_id)
-            return None
+            return self._handle_known_failure(handle, record, started, lock_path, exc)
         except Exception as exc:  # pragma: no cover - unexpected paths
-            finished = _utc_now()
-            self._update_status(
-                handle.job_id,
-                JobStatus.FAILED,
-                progress=0.0,
-                finished_at=_iso(finished),
-                error_code="UNKNOWN",
-                error_message=str(exc),
-            )
-            self._store.write_summary(
-                handle.job_id,
-                {
-                    "job_id": handle.job_id,
-                    "status": JobStatus.FAILED.value,
-                    "error_code": "UNKNOWN",
-                    "duration_seconds": (finished - started).total_seconds(),
-                },
-            )
-            lock_path.unlink(missing_ok=True)
-            self._append_terminal(handle.job_id)
+            self._handle_unexpected_failure(handle, started, lock_path, exc)
             raise
 
+        return self._finalize_success(handle, started, lock_path, result)
+
+    def _should_cancel(self, handle: JobHandle) -> bool:
+        if not handle.cancel_event.is_set():
+            return False
+        self._update_status(handle.job_id, JobStatus.CANCELED, progress=0.0)
+        self._append_terminal(handle.job_id)
+        return True
+
+    def _start_job(self, job_id: str, started: datetime) -> None:
+        self._update_status(
+            job_id,
+            JobStatus.RUNNING,
+            progress=0.0,
+            started_at=_iso(started),
+        )
+
+    def _handle_known_failure(
+        self,
+        handle: JobHandle,
+        record: JobRecord,
+        started: datetime,
+        lock_path: Path,
+        exc: ConversionError,
+    ) -> None:
+        finished = _utc_now()
+        status = JobStatus.CANCELED if exc.code == "CANCELED" else JobStatus.FAILED
+        progress = 1.0 if status is JobStatus.CANCELED else max(record.progress, 0.0)
+        self._update_status(
+            handle.job_id,
+            status,
+            progress=progress,
+            finished_at=_iso(finished),
+            warnings=[],
+            error_code=exc.code,
+            error_message=str(exc),
+        )
+        self._store.write_summary(
+            handle.job_id,
+            {
+                "job_id": handle.job_id,
+                "status": status.value,
+                "error_code": exc.code,
+                "duration_seconds": (finished - started).total_seconds(),
+            },
+        )
+        if status is JobStatus.CANCELED and not self._config.runtime.jobs.keep_partials:
+            self._cleanup_artifacts(handle.job_id)
+        lock_path.unlink(missing_ok=True)
+        self._append_terminal(handle.job_id)
+
+    def _handle_unexpected_failure(
+        self, handle: JobHandle, started: datetime, lock_path: Path, exc: Exception
+    ) -> None:
+        finished = _utc_now()
+        self._update_status(
+            handle.job_id,
+            JobStatus.FAILED,
+            progress=0.0,
+            finished_at=_iso(finished),
+            error_code="UNKNOWN",
+            error_message=str(exc),
+        )
+        self._store.write_summary(
+            handle.job_id,
+            {
+                "job_id": handle.job_id,
+                "status": JobStatus.FAILED.value,
+                "error_code": "UNKNOWN",
+                "duration_seconds": (finished - started).total_seconds(),
+            },
+        )
+        lock_path.unlink(missing_ok=True)
+        self._append_terminal(handle.job_id)
+
+    def _finalize_success(
+        self,
+        handle: JobHandle,
+        started: datetime,
+        lock_path: Path,
+        result: ConversionResult,
+    ) -> ConversionResult:
         finished = _utc_now()
         artifacts = self._build_artifacts(handle.job_id, result)
         self._update_status(
@@ -642,39 +732,52 @@ class JobManager:
 
     def expire_stale_jobs(self) -> None:
         retention_days = self._config.runtime.jobs.retention_days
-        if retention_days <= 0:
-            return
-        if not self._config.runtime.output_dir.exists():
+        if retention_days <= 0 or not self._config.runtime.output_dir.exists():
             return
         cutoff = time.time() - retention_days * 86400
+        for run_dir, status in self._iter_expired_jobs(cutoff):
+            self._expire_job(run_dir, status)
+
+    def _iter_expired_jobs(self, cutoff: float) -> list[tuple[Path, JobRecord]]:
+        candidates: list[tuple[Path, JobRecord]] = []
         for run_dir in self._config.runtime.output_dir.iterdir():
             if not run_dir.is_dir() or run_dir.name.startswith("_"):
                 continue
             status = self._store.read_status(run_dir.name)
             if not status or status.status in {JobStatus.RUNNING, JobStatus.QUEUED}:
                 continue
-            finished = status.finished_at
-            if not finished:
+            finished_ts = self._parse_finished_at(status.finished_at)
+            if finished_ts is None or finished_ts >= cutoff or status.status is JobStatus.EXPIRED:
                 continue
-            try:
-                finished_ts = datetime.strptime(finished, ISO_FORMAT).timestamp()
-            except ValueError:
-                continue
-            if finished_ts < cutoff and status.status is not JobStatus.EXPIRED:
-                status.status = JobStatus.EXPIRED
-                status.progress = 1.0
-                status.finished_at = status.finished_at or _iso(_utc_now())
-                self._store.write_status(status, archive=True)
-                for child in run_dir.iterdir():
-                    if child.is_dir():
-                        for item in child.rglob("*"):
-                            if item.is_file():
-                                item.unlink(missing_ok=True)
-                        child.rmdir()
-                    else:
-                        child.unlink(missing_ok=True)
-                run_dir.rmdir()
-                self._append_terminal(status.job_id)
+            candidates.append((run_dir, status))
+        return candidates
+
+    def _parse_finished_at(self, finished: str | None) -> float | None:
+        if not finished:
+            return None
+        try:
+            return datetime.strptime(finished, ISO_FORMAT).timestamp()
+        except ValueError:
+            return None
+
+    def _expire_job(self, run_dir: Path, status: JobRecord) -> None:
+        status.status = JobStatus.EXPIRED
+        status.progress = 1.0
+        status.finished_at = status.finished_at or _iso(_utc_now())
+        self._store.write_status(status, archive=True)
+        self._remove_run_dir(run_dir)
+        self._append_terminal(status.job_id)
+
+    def _remove_run_dir(self, run_dir: Path) -> None:
+        for child in run_dir.iterdir():
+            if child.is_dir():
+                for item in child.rglob("*"):
+                    if item.is_file():
+                        item.unlink(missing_ok=True)
+                child.rmdir()
+            else:
+                child.unlink(missing_ok=True)
+        run_dir.rmdir()
 
     def _retention_loop(self) -> None:  # pragma: no cover - background thread timing
         while not self._shutdown:
