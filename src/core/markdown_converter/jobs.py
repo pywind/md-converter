@@ -308,16 +308,15 @@ class JobManager:
         self._store.append_index(record)
 
         dedupe_key: str | None = None
-        if self._config.runtime.jobs.dedupe_enabled:
+        if self._config.runtime.jobs.dedupe_enabled and options.dedupe:
             dedupe_key = sha256((digest + options.signature()).encode("utf-8")).hexdigest()
-            if options.dedupe:
-                existing = self._store.lookup_dedupe(dedupe_key)
-                if existing:
-                    reused = self._attempt_reuse(job_id, existing, options, digest, submitted, sanitized)
-                    if reused:
-                        reused_record = self._store.read_status(job_id)
-                        if reused_record:
-                            return reused_record
+            existing = self._store.lookup_dedupe(dedupe_key)
+            if existing:
+                reused = self._attempt_reuse(job_id, existing, options, digest, submitted, sanitized)
+                if reused:
+                    reused_record = self._store.read_status(job_id)
+                    if reused_record:
+                        return reused_record
         handle = JobHandle(
             job_id=job_id,
             filename=sanitized,

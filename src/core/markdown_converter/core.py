@@ -139,7 +139,9 @@ class ConversionService:
         assets = self._prepare_assets(response.assets, context.options)
         context.callback(0.8)
 
+        self._ensure_not_cancelled(context, "finalize")
         markdown = self._finalize_markdown(response.markdown, assets, context.options)
+        self._ensure_not_cancelled(context, "write")
         write_elapsed = self._write_output(context.run_paths.output_file, markdown, context)
 
         self._append_success_log(
