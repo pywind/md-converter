@@ -5,26 +5,13 @@ from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi import Request
 
+from api.dependencies import get_config, get_service
+from api.utils import run_sync
 from core.markdown_converter.config import AppConfig
 from core.markdown_converter.core import ConversionError, ConversionService
 
 router = APIRouter(tags=["conversion"])
-
-
-def get_config(request: Request) -> AppConfig:
-    config = getattr(request.app.state, "config", None)
-    if config is None:
-        raise HTTPException(status_code=503, detail="CONFIG_UNAVAILABLE")
-    return config
-
-
-def get_service(request: Request) -> ConversionService:
-    service = getattr(request.app.state, "service", None)
-    if service is None:
-        raise HTTPException(status_code=503, detail="SERVICE_UNAVAILABLE")
-    return service
 
 
 @router.post("/convert", summary="Convert a single document")
@@ -41,7 +28,7 @@ async def convert_document(
         tmp.flush()
         tmp_path = Path(tmp.name)
     try:
-        result = service.convert_file(tmp_path)
+        result = await run_sync(service.convert_file, tmp_path)
     except ConversionError as exc:
         raise HTTPException(status_code=400, detail=exc.code) from exc
     finally:
@@ -71,7 +58,7 @@ async def batch_convert(
                 tmp.write(content)
                 tmp.flush()
                 temp_files.append(Path(tmp.name))
-        batch_result = service.batch_convert(temp_files)
+        batch_result = await run_sync(service.batch_convert, temp_files)
         for item in batch_result.runs:
             results.append(
                 {
@@ -102,6 +89,4 @@ def _enforce_size_limit(payload: bytes, config: AppConfig) -> None:
 
 __all__ = [
     "router",
-    "get_config",
-    "get_service",
 ]
